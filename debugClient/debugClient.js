@@ -4,6 +4,7 @@ const readline = require('readline');
 let messageId = 1;
 const pendingCommands = new Map();
 let isPaused = false;
+const maxRetries = 5;
 
 // Create a readline interface for user input
 const rl = readline.createInterface({
@@ -27,7 +28,7 @@ async function sendCommand(ws, method, params = {}) {
     });
 }
 
-async function connectToInspector() {
+async function connectToInspector(retries = 0) {
     try {
         const uuid = await promptForUUID();
         const inspectorUrl = `ws://127.0.0.1:9229/${uuid}`;
@@ -47,6 +48,12 @@ async function connectToInspector() {
         ws.on('close', () => {
             console.log('Disconnected from Node.js inspector');
             rl.close();
+            if (retries < maxRetries) {
+                console.log('Attempting to reconnect...');
+                setTimeout(() => connectToInspector(retries + 1), 1000);
+            } else {
+                console.error('Max retries reached. Could not reconnect.');
+            }
         });
 
         commandLoop(ws);
@@ -56,7 +63,8 @@ async function connectToInspector() {
     }
 }
 
-function handleMessage(message) {
+function handleMessage(rawMessage) {
+    const message = JSON.parse(rawMessage);
     console.log("Received message:", JSON.stringify(message, null, 2));
 
     if (message.id && pendingCommands.has(message.id)) {
@@ -86,49 +94,49 @@ function handleMessage(message) {
 }
 
 async function commandLoop(ws) {
-    async function executeCommand(command) {
-        try {
-            switch (command) {
-                case 'continue':
-                    if (!isPaused) {
-                        throw new Error("Cannot continue: debugger is not paused.");
-                    }
-                    await sendCommand(ws, "Debugger.resume");
-                    break;
-                case 'step':
-                    if (!isPaused) {
-                        throw new Error("Cannot step: debugger is not paused.");
-                    }
-                    await sendCommand(ws, "Debugger.stepOver");
-                    break;
-                case 'breakpoint':
-                    const fileName = await promptForFileName();
-                    const line = await promptForLineNumber(fileName);
-                    try {
-                        const result = await sendCommand(ws, "Debugger.setBreakpointByUrl", {
-                            lineNumber: parseInt(line) - 1,
-                            urlRegex: fileName
-                        });
-                        console.log(`Breakpoint set: ${JSON.stringify(result)}`);
-                    } catch (error) {
-                        console.error(`Failed to set breakpoint: ${error.message}`);
-                    }
-                    break;
-                case 'quit':
-                    ws.close();
-                    rl.close();
-                    return;
-                default:
-                    throw new Error('Unknown command');
-            }
-        } catch (error) {
-            console.error('Command execution failed:', error.message);
-        }
-    }
-
     while (true) {
         const command = await promptUserInput();
-        await executeCommand(command);
+        await executeCommand(ws, command);
+    }
+}
+
+async function executeCommand(ws, command) {
+    try {
+        switch (command) {
+            case 'continue':
+                if (!isPaused) {
+                    throw new Error("Cannot continue: debugger is not paused.");
+                }
+                await sendCommand(ws, "Debugger.resume");
+                break;
+            case 'step':
+                if (!isPaused) {
+                    throw new Error("Cannot step: debugger is not paused.");
+                }
+                await sendCommand(ws, "Debugger.stepOver");
+                break;
+            case 'breakpoint':
+                const fileName = await promptForFileName();
+                const line = await promptForLineNumber(fileName);
+                try {
+                    const result = await sendCommand(ws, "Debugger.setBreakpointByUrl", {
+                        lineNumber: parseInt(line) - 1,
+                        urlRegex: fileName
+                    });
+                    console.log(`Breakpoint set: ${JSON.stringify(result)}`);
+                } catch (error) {
+                    console.error(`Failed to set breakpoint: ${error.message}`);
+                }
+                break;
+            case 'quit':
+                ws.close();
+                rl.close();
+                return;
+            default:
+                throw new Error('Unknown command');
+        }
+    } catch (error) {
+        console.error('Command execution failed:', error.message);
     }
 }
 
